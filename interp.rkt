@@ -10,7 +10,7 @@
 
 (require "state.rkt")
 (require "eval.rkt")
-(require "functionParser.rkt")
+(require "classParser.rkt")
 
 (provide interpret M_statementlist-cps M_statement)
 
