@@ -1,0 +1,42 @@
+class A {
+  var x = 1;
+  var y = 2;
+
+  function m() {
+    return this.m2();
+  }
+
+  function m2() {
+    return x + y;
+  }
+}
+
+class B extends A {
+  var y = 22;
+  var z = 3;
+
+  function m2() {
+    return x + y + z;
+  }
+}
+
+class C extends B {
+  var y = 222;
+
+  static function main() {
+    return new C().m2();
+  }
+}
+
+class D {
+  var width = 7;
+  var height = 4;
+
+  function area() {
+    return width * height;
+  }
+
+  static function main() {
+    return new D().area();
+  }
+}

@@ -5,11 +5,12 @@
 ;;;; Darion Gomez
 ;;;; Chloe de Lamare
 ;;;; CSDS 345 Spring 2026
-;;;; Project 2
+;;;; Project 4
 ;;;; ***************************************************
 
 
 (require "state.rkt")
+(require "oo-runtime.rkt")
 
 (provide
  M_expression
@@ -23,7 +24,11 @@
  vs-state
  register-funcall-handler!
  get-current-throw-handler
- set-current-throw-handler!)
+ set-current-throw-handler!
+ register-class-table!
+ get-current-class-table
+ set-current-class-context!
+ get-current-class-context)
 
 ;; Helper Functions -----------------------------------------------------------------------
 
@@ -59,12 +64,18 @@
   (lambda (e)
     (and (list? e) (= (length e) 2))))
 
+(define assignment-target?
+  (lambda (lhs)
+    (or (symbol? lhs)
+        (and (dot-expression? lhs)
+             (symbol? (cadr lhs))))))
+
 (define assignment-expression?
   (lambda (e)
     (and (list? e)
          (= (length e) 3)
          (eq? (operator e) '=)
-         (symbol? (operand1 e)))))
+         (assignment-target? (operand1 e)))))
 
 (define funcall-expression?
   (lambda (e)
@@ -74,11 +85,61 @@
 
 ;; returns an error if a variable is unassigned
 (define lookup-variable
-  (lambda (exp st)
-    (let ([v (state-lookup exp st)])
-      (if (eq? v 'UNINITIALIZED)
-          (error 'badop "Unassigned variable: ~s" exp)
-          v))))
+  (lambda (name st)
+    (with-handlers ([exn:fail?
+                     (lambda (e1)
+                       (if (eq? (get-current-class-context) 'ignored)
+                           (raise e1)
+                           (with-handlers ([exn:fail?
+                                            (lambda (e2)
+                                              (raise e1))])
+                             (let ([this-obj (state-lookup 'this st)])
+                               (if (instance? this-obj)
+                                   (lookup-field
+                                    (get-current-class-table)
+                                    this-obj
+                                    name
+                                    (get-current-class-context))
+                                   (raise e1))))))])
+      (state-lookup name st))))
+
+(define new-expression?
+  (lambda (e)
+    (and (list? e)
+         (pair? e)
+         (eq? (car e) 'new)
+         (>= (length e) 2)
+         (symbol? (cadr e)))))
+
+(define dot-expression?
+  (lambda (e)
+    (and (list? e)
+         (= (length e) 3)
+         (eq? (car e) 'dot)
+         (symbol? (caddr e)))))
+
+(define current-class-table 'UNSET)
+
+(define register-class-table!
+  (lambda (class-table)
+    (set! current-class-table class-table)))
+
+(define get-current-class-table
+  (lambda ()
+    (if (eq? current-class-table 'UNSET)
+        (error 'eval "Class table has not been registered yet")
+        current-class-table)))
+
+(define current-class-context 'ignored)
+
+(define set-current-class-context!
+  (lambda (class-name)
+    (set! current-class-context class-name)))
+
+(define get-current-class-context
+  (lambda ()
+    current-class-context))
+
 
 (define get-current-throw-handler
   (lambda ()
@@ -129,11 +190,47 @@
 ;; returns assigned value + updated state
 (define M_assignmentexpr-vs
   (lambda (expression st)
-    (let* ([rhs-vs (M_expression-vs (operand2 expression) st)]
+    (let* ([lhs (operand1 expression)]
+           [rhs-vs (M_expression-vs (operand2 expression) st)]
            [rhs-val (vs-value rhs-vs)]
-           [rhs-state (vs-state rhs-vs)]
-           [new-state (state-update (operand1 expression) rhs-val rhs-state)])
-      (make-vs rhs-val new-state))))
+           [rhs-state (vs-state rhs-vs)])
+      (cond
+        [(symbol? lhs)
+         (assign-symbol-or-field-vs lhs rhs-val rhs-state)]
+
+        [(dot-expression? lhs)
+         (M_dot-assignment-vs lhs rhs-val rhs-state)]
+
+        [else
+         (error 'M_assignmentexpr-vs
+                "Unsupported assignment target: ~s"
+                lhs)]))))
+
+(define assign-symbol-or-field-vs
+  (lambda (lhs rhs-val rhs-state)
+    (with-handlers ([exn:fail?
+                     (lambda (e1)
+                       (if (eq? (get-current-class-context) 'ignored)
+                           (raise e1)
+                           (with-handlers ([exn:fail?
+                                            (lambda (e2)
+                                              (raise e1))])
+                             (let* ([this-obj (state-lookup 'this rhs-state)])
+                               (if (instance? this-obj)
+                                   (let* ([updated-this
+                                           (update-field
+                                            (get-current-class-table)
+                                            this-obj
+                                            lhs
+                                            rhs-val
+                                            (get-current-class-context))]
+                                          [new-state
+                                           (state-update 'this updated-this rhs-state)])
+                                     (make-vs rhs-val new-state))
+                                   (raise e1))))))])
+      (make-vs rhs-val
+               (state-update lhs rhs-val rhs-state)))))
+
 
 (define M_boolean-vs
   (lambda (expression st)
@@ -226,13 +323,29 @@
          (make-vs (not (equal? left-val right-val)) st2)))
 
       (else
-       (error 'M_boolean "Invalid boolean expression ~s" expression)))))
-
+ (let* ([expr-vs (M_expression-vs expression st)]
+        [val (vs-value expr-vs)]
+        [st1 (vs-state expr-vs)])
+   (cond
+     [(boolean? val)
+      (make-vs val st1)]
+     [(or (eq? val 'true) (eq? val 'false))
+      (make-vs (lang-bool->racket val) st1)]
+     [else
+      (error 'M_boolean
+             "Invalid boolean expression ~s"
+             expression)]))))))
 (define M_value-vs
   (lambda (expression st)
     (cond
       ((number? expression)
        (make-vs expression st))
+
+      ((new-expression? expression)
+       (M_new-vs expression st))
+
+      ((dot-expression? expression)
+       (M_dot-vs expression st))
 
       ((symbol? expression)
        (make-vs (lookup-variable expression st) st))
@@ -293,6 +406,68 @@
 
       (else
        (error 'badop "Invalid int expression ~s" expression)))))
+
+(define M_new-vs
+  (lambda (expression st)
+    (let ([class-name (cadr expression)]
+          [args (cddr expression)])
+      (if (not (null? args))
+          (error 'M_new-vs "Constructors are not supported in the current phase")
+          (make-vs
+           (make-instance (get-current-class-table) class-name)
+           st)))))
+
+(define dot-field-context
+  (lambda (receiver-exp)
+    (if (and (symbol? receiver-exp)
+             (eq? receiver-exp 'this))
+        (get-current-class-context)
+        'ignored)))
+
+(define M_dot-vs
+  (lambda (expression st)
+    (let* ([receiver-exp (cadr expression)]
+           [obj-vs (M_expression-vs receiver-exp st)]
+           [obj (vs-value obj-vs)]
+           [st1 (vs-state obj-vs)]
+           [field-name (caddr expression)]
+           [field-context (dot-field-context receiver-exp)])
+      (if (instance? obj)
+          (make-vs
+           (lookup-field
+            (get-current-class-table)
+            obj
+            field-name
+            field-context)
+           st1)
+          (error 'M_dot-vs
+                 "Left side of dot is not an object: ~s"
+                 obj)))))
+
+(define M_dot-assignment-vs
+  (lambda (lhs rhs-val st)
+    (let* ([receiver-exp (cadr lhs)]
+           [field-name (caddr lhs)])
+      (if (not (symbol? receiver-exp))
+          (error 'M_dot-assignment-vs
+                 "Dot assignment currently requires a variable receiver: ~s"
+                 receiver-exp)
+          (let* ([obj (lookup-variable receiver-exp st)]
+                 [field-context (dot-field-context receiver-exp)])
+            (if (instance? obj)
+                (let* ([updated-obj
+                        (update-field
+                         (get-current-class-table)
+                         obj
+                         field-name
+                         rhs-val
+                         field-context)]
+                       [new-state
+                        (state-update receiver-exp updated-obj st)])
+                  (make-vs rhs-val new-state))
+                (error 'M_dot-assignment-vs
+                       "Left side receiver is not an object: ~s"
+                       obj)))))))
 
 ;; Placeholder only.
 ;; Member 2 / later integration will replace this with real function-call execution.

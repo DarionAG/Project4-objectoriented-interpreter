@@ -1,0 +1,19 @@
+class A {
+  var x = 5;
+
+  static function main() {
+    return new A().x;
+  }
+}
+
+class B extends A {
+  var y = 22;
+}
+
+class C extends B {
+  var y = 222;
+
+  static function main() {
+    return new C().y;
+  }
+}

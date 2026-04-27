@@ -5,30 +5,48 @@
 ;;;; Darion Achilles Gomez
 ;;;; Chloe de Lamare
 ;;;; CSDS 345 Spring 2026
-;;;; Project 2
+;;;; Project 4
 ;;;; ***************************************************
+
 
 (require "state.rkt")
 (require "eval.rkt")
 (require "classParser.rkt")
+(require "oo-runtime.rkt")
 
 (provide interpret M_statementlist-cps M_statement)
 
 ;interpret
 (define interpret
-  (lambda (filename)
-    (let ((ast (parser filename)))
-      (M_global_statementlist
-       ast
-       (empty-state)
-       '()
-       (lambda (global-state)
-         (vs-value (M_expression-vs '(funcall main) global-state)))
-       (lambda (val st) val)
-       (lambda (st) (error "break used outside loop"))
-       (lambda (st) (error "continue used outside loop"))
-       (lambda (val st) (error (format "Uncaught exception: ~a" val)))))))
-          
+  (lambda (filename classname)
+    (let* ([ast (parser filename)]
+           [class-table (build-class-table ast)]
+           [main-method (lookup-main-method class-table classname)])
+      (register-class-table! class-table)
+      (set-current-class-context! 'ignored)
+      (run-static-method-body main-method))))
+
+
+
+(define run-static-method-body
+  (lambda (method)
+    (if (not (null? (method-closure-params method)))
+        (error 'interpret "main should not take parameters in the current phase")
+        (call/cc
+         (lambda (return-escape)
+           (M_statementlist-cps
+            (method-closure-body method)
+            (empty-state)
+            (lambda (finished-state)
+              (return-escape 'undefined))
+            (lambda (ret-val ret-state)
+              (return-escape ret-val))
+            (lambda (st)
+              (error "break used outside loop"))
+            (lambda (st)
+              (error "continue used outside loop"))
+            (lambda (val st)
+              (error (format "Uncaught exception: ~a" val)))))))))
 
 ;abstractions for M_blockofcode
 (define beginningof car)
@@ -172,8 +190,7 @@
                                           (M_declare1 (name-of statement)
                                                       state next return break continue throw)))
       ((eq? (keyword statement) 'return) (M_return (expression statement) state next return break continue throw)) ;return - change to return continuation?
-      ((eq? (keyword statement) '=) (M_assign (name-of-assignment statement)
-                                              (expression-of-statement statement) state next return break continue throw))
+      ((eq? (keyword statement) '=) (M_assign statement state next return break continue throw))
       ((eq? (keyword statement) 'if) (M_if statement state next return break continue throw))
       ((eq? (keyword statement) 'while) (M_while statement state next return break continue throw))
       ((eq? (keyword statement) 'break) (M_break state next return break continue throw))
@@ -204,14 +221,13 @@
           (next (state-declare/init name rhs-val rhs-state)))))))
 
 (define M_assign
-  (lambda (name expression state next return break continue throw)
+  (lambda (statement state next return break continue throw)
     (with-throw-handler
         throw
       (lambda ()
-        (let* ([rhs-vs (M_expression-vs expression state)]
-               [rhs-val (vs-value rhs-vs)]
-               [rhs-state (vs-state rhs-vs)])
-          (next (state-update name rhs-val rhs-state)))))))
+        (let* ([assign-vs (M_expression-vs statement state)]
+               [new-state (vs-state assign-vs)])
+          (next new-state))))))
 
 (define M_return 
   (lambda (expression state next return break continue throw)
@@ -394,42 +410,231 @@
       (map refresh-layer-from-layer closure-env caller-suffix))))
 
 
+(define dot-call-target?
+  (lambda (x)
+    (and (list? x)
+         (= (length x) 3)
+         (eq? (car x) 'dot)
+         (symbol? (caddr x)))))
+
+(define M_assignment
+  (lambda (statement st next return break continue throw)
+    (let* ([assign-vs (M_expression-vs statement st)]
+           [new-state (vs-state assign-vs)])
+      (next new-state))))
+
+(define dot-receiver cadr)
+(define dot-member caddr)
+
+(define merge-receiver-back
+  (lambda (receiver-exp final-this caller-state)
+    (cond
+      [(and (symbol? receiver-exp) (eq? receiver-exp 'super))
+       (state-update 'this final-this caller-state)]
+
+      [(symbol? receiver-exp)
+       (with-handlers ([exn:fail?
+                        (lambda (e1)
+                          (if (eq? (get-current-class-context) 'ignored)
+                              (raise e1)
+                              (with-handlers ([exn:fail?
+                                               (lambda (e2)
+                                                 (raise e1))])
+                                (let* ([this-obj (state-lookup 'this caller-state)]
+                                       [updated-this
+                                        (update-field
+                                         (get-current-class-table)
+                                         this-obj
+                                         receiver-exp
+                                         final-this
+                                         (get-current-class-context))])
+                                  (state-update 'this updated-this caller-state)))))])
+         (state-update receiver-exp final-this caller-state))]
+
+      [else
+       caller-state])))
+
+(define interp-plain-funcall-expression
+  (lambda (statement caller-state)
+    (let* ([fname (funcall-name statement)]
+           [local-binding
+            (with-handlers ([exn:fail? (lambda (e) 'NO-LOCAL-BINDING)])
+              (state-lookup fname caller-state))])
+      (cond
+        [(not (eq? local-binding 'NO-LOCAL-BINDING))
+         (let ([closure local-binding])
+           (if (not (closure? closure))
+               (error 'funcall "Attempted to call a non-function: ~s" fname)
+               (let* ([params (closure-params closure)]
+                      [body (closure-body closure)]
+                      [actuals-vs (eval-actuals-vs (funcall-args statement) caller-state)]
+                      [actual-values (vs-value actuals-vs)]
+                      [caller-state-after-args (vs-state actuals-vs)]
+                      [outer-throw-handler (get-current-throw-handler)]
+                      [env (refresh-env-from-caller (closure-env closure) caller-state-after-args)]
+                      [call-state0 (push-layer env)]
+                      [call-state1 (bind-params params actual-values call-state0)])
+                 (call/cc
+                  (lambda (return-escape)
+                    (M_statementlist-cps
+                     body
+                     call-state1
+                     (lambda (finished-state)
+                       (let ([callee-final (pop-layer finished-state)])
+                         (return-escape
+                          (make-vs 'undefined
+                                   (merge-state-into-caller callee-final caller-state-after-args)))))
+                     (lambda (ret-val ret-state)
+                       (let ([callee-final (pop-layer ret-state)])
+                         (return-escape
+                          (make-vs ret-val
+                                   (merge-state-into-caller callee-final caller-state-after-args)))))
+                     (lambda (st) (error "break used outside loop in function"))
+                     (lambda (st) (error "continue used outside loop in function"))
+                     (lambda (ex st)
+                       (let* ([callee-final (pop-layer st)]
+                              [merged-state (merge-state-into-caller callee-final caller-state-after-args)])
+                         (outer-throw-handler ex merged-state)))))))))]
+
+        [else
+         (if (eq? (get-current-class-context) 'ignored)
+             (state-lookup fname caller-state) ; re-raise original undeclared-variable error
+             (let* ([receiver (state-lookup 'this caller-state)]
+                    [actuals-vs (eval-actuals-vs (funcall-args statement) caller-state)]
+                    [actual-values (vs-value actuals-vs)]
+                    [caller-state-after-args (vs-state actuals-vs)]
+                    [method (lookup-method
+                             (get-current-class-table)
+                             (instance-closure-runtime-class receiver)
+                             fname
+                             '())])
+               (if (method-closure-static? method)
+                   (error 'funcall
+                          "Static methods are not supported through bare method calls in the current phase: ~s"
+                          fname)
+                   (run-instance-method-call
+                    method
+                    receiver
+                    'this
+                    actual-values
+                    caller-state-after-args))))]))))
+
+(define run-instance-method-call
+  (lambda (method receiver receiver-exp actual-values caller-state-after-args)
+    (let* ([params (method-closure-params method)]
+           [body (method-closure-body method)]
+           [owner-class (method-closure-owner-class method)]
+           [saved-class-context (get-current-class-context)]
+           [outer-throw-handler (get-current-throw-handler)]
+           [call-state0 (empty-state)]
+           [call-state1 (state-declare/init 'this receiver call-state0)]
+           [call-state2 (bind-params params actual-values call-state1)])
+      (call/cc
+       (lambda (return-escape)
+         (set-current-class-context! owner-class)
+         (M_statementlist-cps
+          body
+          call-state2
+          (lambda (finished-state)
+            (let* ([final-this (state-lookup 'this finished-state)]
+                   [merged-caller
+                    (merge-receiver-back receiver-exp final-this caller-state-after-args)])
+              (set-current-class-context! saved-class-context)
+              (return-escape (make-vs 'undefined merged-caller))))
+          (lambda (ret-val ret-state)
+            (let* ([final-this (state-lookup 'this ret-state)]
+                   [merged-caller
+                    (merge-receiver-back receiver-exp final-this caller-state-after-args)])
+              (set-current-class-context! saved-class-context)
+              (return-escape (make-vs ret-val merged-caller))))
+          (lambda (st)
+            (set-current-class-context! saved-class-context)
+            (error "break used outside loop in method"))
+          (lambda (st)
+            (set-current-class-context! saved-class-context)
+            (error "continue used outside loop in method"))
+          (lambda (ex st)
+            (let* ([final-this (state-lookup 'this st)]
+                   [merged-caller
+                    (merge-receiver-back receiver-exp final-this caller-state-after-args)])
+              (set-current-class-context! saved-class-context)
+              (outer-throw-handler ex merged-caller)))))))))
+
+(define interp-method-funcall-expression
+  (lambda (statement caller-state)
+    (let* ([callee (funcall-name statement)]
+           [receiver-exp (dot-receiver callee)]
+           [method-name (dot-member callee)])
+      (cond
+        [(and (symbol? receiver-exp) (eq? receiver-exp 'super))
+         (let* ([current-class (get-current-class-context)])
+           (if (eq? current-class 'ignored)
+               (error 'funcall "super used outside an instance method")
+               (let* ([start-class
+                       (superclass-of (get-current-class-table) current-class)])
+                 (if (null? start-class)
+                     (error 'funcall
+                            "Class ~s has no superclass for super call"
+                            current-class)
+                     (let* ([receiver (state-lookup 'this caller-state)]
+                            [actuals-vs
+                             (eval-actuals-vs (funcall-args statement) caller-state)]
+                            [actual-values (vs-value actuals-vs)]
+                            [caller-state-after-args (vs-state actuals-vs)]
+                            [method
+                             (lookup-method
+                              (get-current-class-table)
+                              (instance-closure-runtime-class receiver)
+                              method-name
+                              start-class)])
+                       (if (method-closure-static? method)
+                           (error 'funcall
+                                  "Static methods are not supported through super calls in the current phase: ~s"
+                                  method-name)
+                           (run-instance-method-call
+                            method
+                            receiver
+                            'super
+                            actual-values
+                            caller-state-after-args)))))))]
+
+        [else
+         (let* ([receiver-vs (M_expression-vs receiver-exp caller-state)]
+                [receiver (vs-value receiver-vs)]
+                [st1 (vs-state receiver-vs)])
+           (if (not (instance? receiver))
+               (error 'funcall "Attempted to call method ~s on non-object: ~s"
+                      method-name
+                      receiver)
+               (let* ([actuals-vs (eval-actuals-vs (funcall-args statement) st1)]
+                      [actual-values (vs-value actuals-vs)]
+                      [caller-state-after-args (vs-state actuals-vs)]
+                      [method (lookup-method
+                               (get-current-class-table)
+                               (instance-closure-runtime-class receiver)
+                               method-name
+                               '())])
+                 (if (method-closure-static? method)
+                     (error 'funcall
+                            "Static methods are not supported through object calls in the current phase: ~s"
+                            method-name)
+                     (run-instance-method-call
+                      method
+                      receiver
+                      receiver-exp
+                      actual-values
+                      caller-state-after-args)))))]))))
+
 (define interp-funcall-expression
   (lambda (statement caller-state)
-    (let ([closure (state-lookup (funcall-name statement) caller-state)])
-      (if (not (closure? closure))
-          (error 'funcall "Attempted to call a non-function: ~s" (funcall-name statement))
-          (let* ([params (closure-params closure)]
-                 [body (closure-body closure)]
-                 [actuals-vs (eval-actuals-vs (funcall-args statement) caller-state)]
-                 [actual-values (vs-value actuals-vs)]
-                 [caller-state-after-args (vs-state actuals-vs)]
-                 [outer-throw-handler (get-current-throw-handler)]
-                 [env (refresh-env-from-caller (closure-env closure) caller-state-after-args)]
-                 [call-state0 (push-layer env)]
-                 [call-state1 (bind-params params actual-values call-state0)])
-            (call/cc
-             (lambda (return-escape)
-               (M_statementlist-cps
-                body
-                call-state1
-                (lambda (finished-state)
-                  (let ([callee-final (pop-layer finished-state)])
-                    (return-escape
-                     (make-vs 'undefined
-                              (merge-state-into-caller callee-final caller-state-after-args)))))
-                (lambda (ret-val ret-state)
-                  (let ([callee-final (pop-layer ret-state)])
-                    (return-escape
-                     (make-vs ret-val
-                              (merge-state-into-caller callee-final caller-state-after-args)))))
-                (lambda (st) (error "break used outside loop in function"))
-                (lambda (st) (error "continue used outside loop in function"))
-                (lambda (ex st)
-                  (let* ([callee-final (pop-layer st)]
-                         [merged-state (merge-state-into-caller callee-final caller-state-after-args)])
-                    (outer-throw-handler ex merged-state)))))))))))
-
+    (let ([callee (funcall-name statement)])
+      (cond
+        [(symbol? callee)
+         (interp-plain-funcall-expression statement caller-state)]
+        [(dot-call-target? callee)
+         (interp-method-funcall-expression statement caller-state)]
+        [else
+         (error 'funcall "Unsupported function/method call target: ~s" callee)]))))
 
 ;; abstractions for try/catch/finally
 (define catch-block second)

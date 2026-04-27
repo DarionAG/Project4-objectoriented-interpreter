@@ -1,5 +1,13 @@
 #lang racket
 
+;;;; ***************************************************
+;;;; Jianhao Deng
+;;;; Darion Achilles Gomez
+;;;; Chloe de Lamare
+;;;; CSDS 345 Spring 2026
+;;;; Project 4
+;;;; ***************************************************
+
 (provide
  (struct-out class-closure)
  (struct-out method-closure)
@@ -22,7 +30,7 @@
 
 (struct class-closure (name super field-defs method-table) #:transparent)
 (struct method-closure (name params body owner-class static?) #:transparent)
-(struct instance-closure (runtime-class field-bindings) #:transparent)
+(struct instance-closure (runtime-class field-bindings) #:transparent #:mutable)
 
 
 (define class-name cadr)
@@ -248,13 +256,15 @@
     (let* ([start-class (field-start-class instance current-class)]
            [owner (find-field-owner class-table start-class field-name)])
       (if owner
-          (instance-closure
-           (instance-closure-runtime-class instance)
-           (update-field-bindings
-            (instance-closure-field-bindings instance)
-            owner
-            field-name
-            new-value))
+          (begin
+            (set-instance-closure-field-bindings!
+             instance
+             (update-field-bindings
+              (instance-closure-field-bindings instance)
+              owner
+              field-name
+              new-value))
+            instance)
           (error 'update-field
                  "Unknown field ~s in class view ~s for instance of ~s"
                  field-name

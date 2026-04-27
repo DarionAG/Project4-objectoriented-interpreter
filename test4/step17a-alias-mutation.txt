@@ -1,0 +1,31 @@
+class Box {
+  var x = 0;
+
+  function setX(v) {
+    x = v;
+  }
+}
+
+class Holder {
+  var b;
+
+  function init() {
+    b = new Box();
+  }
+
+  function mutateThroughAlias() {
+    var p = b;
+    p.setX(7);
+  }
+
+  function read() {
+    return b.x;
+  }
+
+  static function main() {
+    var h = new Holder();
+    h.init();
+    h.mutateThroughAlias();
+    return h.read();
+  }
+}

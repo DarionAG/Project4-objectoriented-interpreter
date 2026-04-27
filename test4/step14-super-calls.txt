@@ -1,0 +1,57 @@
+class A {
+  var x = 1;
+  var y = 2;
+
+  function m() {
+    return this.m2();
+  }
+
+  function m2() {
+    return x + y;
+  }
+}
+
+class B extends A {
+  var y = 22;
+  var z = 3;
+
+  function m() {
+    return super.m();
+  }
+
+  function m2() {
+    return x + y + z;
+  }
+}
+
+class C extends B {
+  var y = 222;
+
+  function m() {
+    return super.m();
+  }
+
+  static function main() {
+    return new C().m();
+  }
+}
+
+class P {
+  var x = 5;
+
+  function setX(v) {
+    x = v;
+  }
+}
+
+class Q extends P {
+  function setViaSuper(v) {
+    super.setX(v);
+  }
+
+  static function main() {
+    var q = new Q();
+    q.setViaSuper(9);
+    return q.x;
+  }
+}

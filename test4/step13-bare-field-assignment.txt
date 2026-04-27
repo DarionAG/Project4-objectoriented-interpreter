@@ -1,0 +1,63 @@
+class Rect {
+  var height;
+  var width;
+
+  function setHeight(h) {
+    height = h;
+  }
+
+  function setWidth(w) {
+    width = w;
+  }
+
+  function area() {
+    return width * height;
+  }
+
+  static function main() {
+    var r = new Rect();
+    r.setHeight(8);
+    r.setWidth(4);
+    return r.area();
+  }
+}
+
+class A {
+  var y = 2;
+
+  function setY(v) {
+    y = v;
+  }
+}
+
+class B extends A {
+  var y = 22;
+
+  function setY(v) {
+    y = v;
+  }
+}
+
+class C extends B {
+  var y = 222;
+
+  static function main() {
+    var c = new C();
+    c.setY(999);
+    return c.y;
+  }
+}
+
+class D extends B {
+  var y = 222;
+
+  function setBoth() {
+    y = 888;
+  }
+
+  static function main() {
+    var d = new D();
+    d.setBoth();
+    return d.y;
+  }
+}

@@ -1,0 +1,67 @@
+class T2 {
+  function add(g, h) {
+    return g + h;
+  }
+
+  static function main() {
+    var a = new T2();
+    return a.add(10, 2);
+  }
+}
+
+class T3 {
+  var x = 100;
+
+  function add(x) {
+    return this.x + x;
+  }
+
+  static function main() {
+    var a = new T3();
+    return a.add(25);
+  }
+}
+
+class T4 {
+  var x = 100;
+
+  function setX(x) {
+    this.x = x;
+  }
+
+  function add(a) {
+    return a.x + this.x;
+  }
+
+  static function main() {
+    var a1 = new T4();
+    var a2 = new T4();
+    a1.setX(30);
+    a2.setX(6);
+    return a1.add(a2);
+  }
+}
+
+class T5 {
+  var x = 100;
+
+  function setX(x) {
+    this.x = x;
+  }
+
+  function getX() {
+    return this.x;
+  }
+
+  function add(a) {
+    return a.getX() + this.getX();
+  }
+
+  static function main() {
+    var a1 = new T5();
+    var a2 = new T5();
+    a1.setX(50);
+    a2.setX(4);
+    return a1.add(a2);
+  }
+}
