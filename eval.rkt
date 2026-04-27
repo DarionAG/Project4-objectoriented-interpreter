@@ -5,11 +5,12 @@
 ;;;; Darion Gomez
 ;;;; Chloe de Lamare
 ;;;; CSDS 345 Spring 2026
-;;;; Project 2
+;;;; Project 4
 ;;;; ***************************************************
 
 
 (require "state.rkt")
+(require "oo-runtime.rkt")
 
 (provide
  M_expression
@@ -59,12 +60,14 @@
   (lambda (e)
     (and (list? e) (= (length e) 2))))
 
+;; allow both x = expr and a.x = epr
 (define assignment-expression?
   (lambda (e)
     (and (list? e)
          (= (length e) 3)
          (eq? (operator e) '=)
-         (symbol? (operand1 e)))))
+         (or (symbol? (operand1 e))
+             (dot-expression? (operand1 e))))))
 
 (define funcall-expression?
   (lambda (e)
@@ -72,13 +75,42 @@
          (pair? e)
          (eq? (car e) 'funcall))))
 
+;; OO abstraction helpers ------------------------------------------------------
+(define dot-left cadr)
+(define dot-name caddr)
+(define new-class cadr)
+
+(define dot-expression?
+  (lambda (e)
+    (and (list? e)
+         (= (length e) 3)
+         (eq? (car e) 'dot))))
+
+(define new-expression?
+  (lambda (e)
+    (and (list? e)
+         (= (length e) 2)
+         (eq? (car e) 'new))))
+
 ;; returns an error if a variable is unassigned
 (define lookup-variable
   (lambda (exp st)
-    (let ([v (state-lookup exp st)])
-      (if (eq? v 'UNINITIALIZED)
-          (error 'badop "Unassigned variable: ~s" exp)
-          v))))
+    (cond
+      ((state-has? exp st)
+       (let ([v (state-lookup exp st)])
+         (if (eq? v 'UNINITIALIZED)
+             (error 'badop "Unassigned variable: ~s" exp)
+             v)))
+
+      ((state-has? 'this st)
+       (lookup-field
+        (state-lookup 'class-table st)
+        (state-lookup 'this st)
+        exp
+        (state-lookup 'current-class st)))
+
+      (else
+       (error 'badop "Undeclared variable: ~s" exp)))))
 
 (define get-current-throw-handler
   (lambda ()
@@ -132,8 +164,27 @@
     (let* ([rhs-vs (M_expression-vs (operand2 expression) st)]
            [rhs-val (vs-value rhs-vs)]
            [rhs-state (vs-state rhs-vs)]
-           [new-state (state-update (operand1 expression) rhs-val rhs-state)])
-      (make-vs rhs-val new-state))))
+           [lhs (operand1 expression)])
+      (if (dot-expression? lhs)
+          (make-vs rhs-val (M_dot-assign lhs rhs-val rhs-state))
+          (make-vs rhs-val (state-update lhs rhs-val rhs-state))))))
+
+(define M_dot-assign
+  (lambda (lhs val st)
+    (let* ([obj-expr      (dot-left lhs)]
+           [field         (dot-name lhs)]
+           [class-table   (state-lookup 'class-table st)]
+           [current-class (state-lookup 'current-class st)]
+           [view-class    (if (eq? obj-expr 'super)
+                              (superclass-of class-table current-class)
+                              current-class)]
+           [obj           (M_expression obj-expr st)]
+           [new-obj       (update-field class-table obj field val view-class)])
+      (cond
+        ((eq? obj-expr 'this)  (state-update 'this new-obj st))
+        ((eq? obj-expr 'super) (state-update 'this new-obj st))
+        ((symbol? obj-expr)    (state-update obj-expr new-obj st))
+        (else (error 'M_dot-assign "Unsupported assignment target: ~s" lhs))))))
 
 (define M_boolean-vs
   (lambda (expression st)
@@ -240,6 +291,12 @@
       ((funcall-expression? expression)
        (M_funcall-expression expression st))
 
+      ((new-expression? expression)
+       (M_new-vs expression st))
+
+      ((dot-expression? expression)
+       (M_dot-vs expression st))
+
       ((and (eq? '+ (operator expression)) (binary-opp? expression))
        (let* ([left-vs (M_expression-vs (operand1 expression) st)]
               [left-val (vs-value left-vs)]
@@ -293,6 +350,30 @@
 
       (else
        (error 'badop "Invalid int expression ~s" expression)))))
+
+(define M_new-vs
+  (lambda (expression st)
+    (make-vs
+     (make-instance
+      (state-lookup 'class-table st)
+      (new-class expression))
+     st)))
+
+(define M_dot-vs
+  (lambda (expression st)
+    (let* ([left-expr     (dot-left expression)]
+           [field         (dot-name expression)]
+           [class-table   (state-lookup 'class-table st)]
+           [current-class (state-lookup 'current-class st)]
+           [view-class    (if (eq? left-expr 'super)
+                              (superclass-of class-table current-class)
+                              current-class)]
+           [left-vs       (M_expression-vs left-expr st)]
+           [obj           (vs-value left-vs)]
+           [st1           (vs-state left-vs)])
+      (make-vs
+       (lookup-field class-table obj field view-class)
+       st1))))
 
 ;; Placeholder only.
 ;; Member 2 / later integration will replace this with real function-call execution.
